@@ -1,0 +1,23 @@
+generate_form:
+  description: "יצירת טופס HTML לאיסוף נתוני עסקת נדל\"ן בעברית RTL"
+  expected_output: "קובץ HTML של טופס לקוח"
+
+validate_data:
+  description: "אימות נתונים לפי 50+ כללים כולל ת.ז. ישראלית"
+  expected_output: "דוח ולידציה ו-EDA report"
+
+process_documents:
+  description: "OCR על מסמכים סרוקים וחילוץ נתונים מובנים"
+  expected_output: "clean_data.csv, dataset_contract.json, insights.md"
+
+build_contract:
+  description: "בניית חוזה מכר דירה מלא בעברית (2 גרסאות)"
+  expected_output: "contract.docx בשתי גרסאות"
+
+check_compliance:
+  description: "בדיקת תאימות משפטית מול חוק מכר דירות"
+  expected_output: "evaluation_report.md"
+
+score_quality:
+  description: "ציון איכות 0-100 ויצירת כרטיס חוזה"
+  expected_output: "contract_card.md"
