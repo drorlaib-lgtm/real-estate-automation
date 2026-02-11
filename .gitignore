@@ -9,3 +9,11 @@ dist/
 build/
 .idea/
 .vscode/
+
+# Google credentials - DO NOT COMMIT
+token.json
+oauth_credentials.json
+credentials.json
+submissions/
+contracts/
+nul

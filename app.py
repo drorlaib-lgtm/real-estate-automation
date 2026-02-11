@@ -28,13 +28,25 @@ st.set_page_config(
     layout="wide",
 )
 
-# RTL CSS
+# RTL CSS + Drag & Drop styling
 st.markdown("""
 <style>
     .stApp { direction: rtl; }
     .stMarkdown, .stText, label, .stSelectbox, .stTextInput, .stNumberInput { direction: rtl; text-align: right; }
     h1, h2, h3 { text-align: center; }
     .stProgress > div > div { direction: ltr; }
+    /* Drag and drop styling */
+    .uploadedFile { direction: ltr; }
+    [data-testid="stFileUploader"] {
+        border: 2px dashed #ccc;
+        border-radius: 10px;
+        padding: 20px;
+        text-align: center;
+    }
+    [data-testid="stFileUploader"]:hover {
+        border-color: #1f77b4;
+        background-color: #f0f8ff;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -51,7 +63,27 @@ page = st.sidebar.radio("בחר שלב:", [
     "📊 דוחות ותוצאות",
 ])
 
-# Initialize session state
+# Initialize session state - PERSISTENT across pages
+if "sellers" not in st.session_state:
+    st.session_state.sellers = [{"name": "", "id": "", "address": "", "phone": "", "email": "", "marital_status": ""}]
+if "buyers" not in st.session_state:
+    st.session_state.buyers = [{"name": "", "id": "", "address": "", "phone": "", "email": "", "marital_status": ""}]
+if "property_data" not in st.session_state:
+    st.session_state.property_data = {}
+if "transaction_data" not in st.session_state:
+    st.session_state.transaction_data = {}
+if "seller_notes" not in st.session_state:
+    st.session_state.seller_notes = ""
+if "uploaded_docs" not in st.session_state:
+    st.session_state.uploaded_docs = {
+        "seller_ids": [],
+        "buyer_ids": [],
+        "tabu": None,
+        "municipal": None,
+        "arnona": None,
+        "purchase_agreement": None,
+        "other": []
+    }
 if "client_data" not in st.session_state:
     st.session_state.client_data = {}
 if "ocr_data" not in st.session_state:
@@ -67,117 +99,389 @@ if "quality_result" not in st.session_state:
 if "flow_completed" not in st.session_state:
     st.session_state.flow_completed = False
 
+# Marital status mapping
+MARITAL_OPTIONS = ["", "רווק/ה", "נשוי/אה", "גרוש/ה", "אלמן/ה"]
+MARITAL_MAP = {"": "", "רווק/ה": "single", "נשוי/אה": "married", "גרוש/ה": "divorced", "אלמן/ה": "widowed"}
+MARITAL_MAP_REVERSE = {v: k for k, v in MARITAL_MAP.items()}
+
+# Supported file types for uploads
+SUPPORTED_FILE_TYPES = ["png", "jpg", "jpeg", "tiff", "bmp", "pdf", "doc", "docx"]
+
+
+def render_person_form(person_type: str, index: int, data: dict) -> dict:
+    """Render form fields for a person (seller/buyer) and return updated data."""
+    prefix = f"{person_type}_{index}"
+
+    col1, col2 = st.columns(2)
+    with col1:
+        data["name"] = st.text_input("שם מלא *", value=data.get("name", ""), key=f"{prefix}_name")
+        data["id"] = st.text_input("תעודת זהות *", value=data.get("id", ""), key=f"{prefix}_id")
+        data["address"] = st.text_input("כתובת *", value=data.get("address", ""), key=f"{prefix}_address")
+    with col2:
+        data["phone"] = st.text_input("טלפון *", value=data.get("phone", ""), placeholder="05XXXXXXXX", key=f"{prefix}_phone")
+        data["email"] = st.text_input("דוא\"ל *", value=data.get("email", ""), key=f"{prefix}_email")
+        current_marital = MARITAL_MAP_REVERSE.get(data.get("marital_status", ""), "")
+        marital_index = MARITAL_OPTIONS.index(current_marital) if current_marital in MARITAL_OPTIONS else 0
+        marital = st.selectbox("מצב משפחתי *", MARITAL_OPTIONS, index=marital_index, key=f"{prefix}_marital")
+        data["marital_status"] = MARITAL_MAP.get(marital, "")
+
+    return data
+
 
 if page == "📝 הזנת נתונים":
     st.header("📝 הזנת פרטי העסקה")
 
-    col1, col2 = st.columns(2)
+    # === SELLERS SECTION ===
+    st.subheader("פרטי המוכרים")
 
-    with col1:
-        st.subheader("פרטי המוכר")
-        seller_name = st.text_input("שם מלא *", key="seller_name")
-        seller_id = st.text_input("תעודת זהות *", key="seller_id")
-        seller_address = st.text_input("כתובת *", key="seller_address")
-        seller_phone = st.text_input("טלפון *", placeholder="05XXXXXXXX", key="seller_phone")
-        seller_email = st.text_input("דוא\"ל *", key="seller_email")
-        seller_marital = st.selectbox("מצב משפחתי", ["", "רווק/ה", "נשוי/אה", "גרוש/ה", "אלמן/ה"], key="seller_marital")
-        marital_map = {"": "", "רווק/ה": "single", "נשוי/אה": "married", "גרוש/ה": "divorced", "אלמן/ה": "widowed"}
+    num_sellers = len(st.session_state.sellers)
 
-    with col2:
-        st.subheader("פרטי הקונה")
-        buyer_name = st.text_input("שם מלא *", key="buyer_name")
-        buyer_id = st.text_input("תעודת זהות *", key="buyer_id")
-        buyer_address = st.text_input("כתובת *", key="buyer_address")
-        buyer_phone = st.text_input("טלפון *", placeholder="05XXXXXXXX", key="buyer_phone")
-        buyer_email = st.text_input("דוא\"ל *", key="buyer_email")
+    for i in range(num_sellers):
+        with st.expander(f"מוכר {i + 1}" + (f" - {st.session_state.sellers[i].get('name', '')}" if st.session_state.sellers[i].get('name') else ""), expanded=(i == 0)):
+            st.session_state.sellers[i] = render_person_form("seller", i, st.session_state.sellers[i])
 
+            if num_sellers > 1:
+                if st.button(f"🗑️ הסר מוכר {i + 1}", key=f"remove_seller_{i}"):
+                    st.session_state.sellers.pop(i)
+                    st.rerun()
+
+    if st.button("➕ הוסף מוכר נוסף", key="add_seller"):
+        st.session_state.sellers.append({"name": "", "id": "", "address": "", "phone": "", "email": "", "marital_status": ""})
+        st.rerun()
+
+    st.markdown("---")
+
+    # === BUYERS SECTION ===
+    st.subheader("פרטי הקונים")
+
+    num_buyers = len(st.session_state.buyers)
+
+    for i in range(num_buyers):
+        with st.expander(f"קונה {i + 1}" + (f" - {st.session_state.buyers[i].get('name', '')}" if st.session_state.buyers[i].get('name') else ""), expanded=(i == 0)):
+            st.session_state.buyers[i] = render_person_form("buyer", i, st.session_state.buyers[i])
+
+            if num_buyers > 1:
+                if st.button(f"🗑️ הסר קונה {i + 1}", key=f"remove_buyer_{i}"):
+                    st.session_state.buyers.pop(i)
+                    st.rerun()
+
+    if st.button("➕ הוסף קונה נוסף", key="add_buyer"):
+        st.session_state.buyers.append({"name": "", "id": "", "address": "", "phone": "", "email": "", "marital_status": ""})
+        st.rerun()
+
+    st.markdown("---")
+
+    # === PROPERTY SECTION ===
     st.subheader("פרטי הנכס")
+    prop = st.session_state.property_data
+
     col3, col4 = st.columns(2)
     with col3:
-        property_address = st.text_input("כתובת הנכס *", key="prop_addr")
-        block_number = st.text_input("גוש *", key="block")
-        parcel_number = st.text_input("חלקה *", key="parcel")
-        sub_parcel = st.text_input("תת-חלקה", key="sub_parcel")
+        prop["address"] = st.text_input("כתובת הנכס *", value=prop.get("address", ""), key="prop_addr")
+        prop["block_number"] = st.text_input("גוש *", value=prop.get("block_number", ""), key="block")
+        prop["parcel_number"] = st.text_input("חלקה *", value=prop.get("parcel_number", ""), key="parcel")
+        prop["sub_parcel"] = st.text_input("תת-חלקה", value=prop.get("sub_parcel", ""), key="sub_parcel")
     with col4:
-        area_sqm = st.number_input("שטח (מ\"ר) *", min_value=10, max_value=5000, value=80, key="area")
-        rooms = st.number_input("חדרים *", min_value=1.0, max_value=20.0, value=3.0, step=0.5, key="rooms_input")
-        floor = st.number_input("קומה", min_value=-2, max_value=100, value=0, key="floor_input")
-        prop_type = st.selectbox("סוג נכס *", ["דירה", "פנטהאוז", "דירת גן", "דופלקס", "בית פרטי", "מגרש"], key="prop_type")
+        prop["area_sqm"] = st.number_input("שטח (מ\"ר) *", min_value=10, max_value=5000, value=int(prop.get("area_sqm", 80)), key="area")
+        prop["rooms"] = st.number_input("חדרים *", min_value=1.0, max_value=20.0, value=float(prop.get("rooms", 3.0)), step=0.5, key="rooms_input")
+        prop["floor"] = st.number_input("קומה", min_value=-2, max_value=100, value=int(prop.get("floor", 0)), key="floor_input")
+
+        prop_types = ["דירה", "פנטהאוז", "דירת גן", "דופלקס", "בית פרטי", "מגרש"]
         type_map = {"דירה": "apartment", "פנטהאוז": "penthouse", "דירת גן": "garden", "דופלקס": "duplex", "בית פרטי": "house", "מגרש": "land"}
+        type_map_reverse = {v: k for k, v in type_map.items()}
+        current_type = type_map_reverse.get(prop.get("property_type", "apartment"), "דירה")
+        prop_type = st.selectbox("סוג נכס *", prop_types, index=prop_types.index(current_type), key="prop_type")
+        prop["property_type"] = type_map.get(prop_type, "apartment")
 
     col5, col6 = st.columns(2)
     with col5:
-        parking = st.selectbox("חניה", ["ללא", "מקורה", "לא מקורה", "תת-קרקעית"], key="parking_input")
+        parking_options = ["ללא", "מקורה", "לא מקורה", "תת-קרקעית"]
         parking_map = {"ללא": "none", "מקורה": "covered", "לא מקורה": "uncovered", "תת-קרקעית": "underground"}
+        parking_map_reverse = {v: k for k, v in parking_map.items()}
+        current_parking = parking_map_reverse.get(prop.get("parking", "none"), "ללא")
+        parking = st.selectbox("חניה", parking_options, index=parking_options.index(current_parking), key="parking_input")
+        prop["parking"] = parking_map.get(parking, "none")
     with col6:
-        storage = st.selectbox("מחסן", ["לא", "כן"], key="storage_input")
+        storage_options = ["לא", "כן"]
+        current_storage = "כן" if prop.get("storage") == "yes" else "לא"
+        storage = st.selectbox("מחסן", storage_options, index=storage_options.index(current_storage), key="storage_input")
+        prop["storage"] = "yes" if storage == "כן" else "no"
 
+    st.session_state.property_data = prop
+
+    st.markdown("---")
+
+    # === TRANSACTION SECTION ===
     st.subheader("פרטי העסקה")
+    trans = st.session_state.transaction_data
+
     col7, col8 = st.columns(2)
     with col7:
-        price = st.number_input("מחיר (₪) *", min_value=50000, max_value=100000000, value=1500000, step=50000, key="price_input")
-        signing_date = st.date_input("תאריך חתימה *", value=date.today() + timedelta(days=7), key="sign_date")
+        trans["price"] = st.number_input("מחיר (₪) *", min_value=50000, max_value=100000000, value=int(trans.get("price", 1500000)), step=50000, key="price_input")
+        default_sign_date = date.today() + timedelta(days=7)
+        if trans.get("signing_date"):
+            try:
+                default_sign_date = date.fromisoformat(trans["signing_date"])
+            except:
+                pass
+        trans["signing_date"] = st.date_input("תאריך חתימה *", value=default_sign_date, key="sign_date").strftime("%Y-%m-%d")
     with col8:
-        delivery_date = st.date_input("תאריך מסירה *", value=date.today() + timedelta(days=90), key="del_date")
-    notes = st.text_area("הערות נוספות", key="notes_input")
+        default_del_date = date.today() + timedelta(days=90)
+        if trans.get("delivery_date"):
+            try:
+                default_del_date = date.fromisoformat(trans["delivery_date"])
+            except:
+                pass
+        trans["delivery_date"] = st.date_input("תאריך מסירה *", value=default_del_date, key="del_date").strftime("%Y-%m-%d")
 
+    st.session_state.transaction_data = trans
+
+    st.markdown("---")
+
+    # === SELLER NOTES (for declaration) ===
+    st.subheader("הערות המוכר (יופיעו בהצהרת המוכר בחוזה)")
+    st.session_state.seller_notes = st.text_area(
+        "הערות נוספות של המוכר לגבי הנכס",
+        value=st.session_state.seller_notes,
+        key="seller_notes_input",
+        height=150,
+        help="הערות אלו יוכנסו לסעיף הצהרת המוכר בהסכם הסופי"
+    )
+
+    st.markdown("---")
+
+    # === SAVE BUTTON ===
     if st.button("💾 שמור נתונים", type="primary"):
+        # Build client_data from all parts (for backward compatibility)
+        # Use first seller/buyer as primary, store all in lists
+        primary_seller = st.session_state.sellers[0] if st.session_state.sellers else {}
+        primary_buyer = st.session_state.buyers[0] if st.session_state.buyers else {}
+
         st.session_state.client_data = {
-            "seller_name": seller_name, "seller_id": seller_id,
-            "seller_address": seller_address, "seller_phone": seller_phone,
-            "seller_email": seller_email, "seller_marital_status": marital_map.get(seller_marital, ""),
-            "buyer_name": buyer_name, "buyer_id": buyer_id,
-            "buyer_address": buyer_address, "buyer_phone": buyer_phone,
-            "buyer_email": buyer_email,
-            "property_address": property_address, "block_number": block_number,
-            "parcel_number": parcel_number, "sub_parcel": sub_parcel,
-            "area_sqm": str(area_sqm), "rooms": str(rooms), "floor": str(floor),
-            "property_type": type_map.get(prop_type, "apartment"),
-            "parking": parking_map.get(parking, "none"),
-            "storage": "yes" if storage == "כן" else "no",
-            "price": str(price),
-            "signing_date": signing_date.strftime("%Y-%m-%d"),
-            "delivery_date": delivery_date.strftime("%Y-%m-%d"),
-            "notes": notes,
+            # Primary seller (backward compatible)
+            "seller_name": primary_seller.get("name", ""),
+            "seller_id": primary_seller.get("id", ""),
+            "seller_address": primary_seller.get("address", ""),
+            "seller_phone": primary_seller.get("phone", ""),
+            "seller_email": primary_seller.get("email", ""),
+            "seller_marital_status": primary_seller.get("marital_status", ""),
+            # Primary buyer (backward compatible)
+            "buyer_name": primary_buyer.get("name", ""),
+            "buyer_id": primary_buyer.get("id", ""),
+            "buyer_address": primary_buyer.get("address", ""),
+            "buyer_phone": primary_buyer.get("phone", ""),
+            "buyer_email": primary_buyer.get("email", ""),
+            "buyer_marital_status": primary_buyer.get("marital_status", ""),
+            # Property
+            "property_address": st.session_state.property_data.get("address", ""),
+            "block_number": st.session_state.property_data.get("block_number", ""),
+            "parcel_number": st.session_state.property_data.get("parcel_number", ""),
+            "sub_parcel": st.session_state.property_data.get("sub_parcel", ""),
+            "area_sqm": str(st.session_state.property_data.get("area_sqm", "")),
+            "rooms": str(st.session_state.property_data.get("rooms", "")),
+            "floor": str(st.session_state.property_data.get("floor", "")),
+            "property_type": st.session_state.property_data.get("property_type", "apartment"),
+            "parking": st.session_state.property_data.get("parking", "none"),
+            "storage": st.session_state.property_data.get("storage", "no"),
+            # Transaction
+            "price": str(st.session_state.transaction_data.get("price", "")),
+            "signing_date": st.session_state.transaction_data.get("signing_date", ""),
+            "delivery_date": st.session_state.transaction_data.get("delivery_date", ""),
+            # Notes
+            "notes": st.session_state.seller_notes,
+            "seller_declaration_notes": st.session_state.seller_notes,
+            # All parties (new format)
+            "all_sellers": st.session_state.sellers,
+            "all_buyers": st.session_state.buyers,
         }
         st.success("הנתונים נשמרו בהצלחה!")
+        st.info(f"נשמרו: {len(st.session_state.sellers)} מוכרים, {len(st.session_state.buyers)} קונים")
 
 
 elif page == "📄 העלאת מסמכים":
-    st.header("📄 העלאת מסמכים סרוקים")
+    st.header("📄 העלאת מסמכים")
+    st.markdown("ניתן לגרור קבצים לאזור ההעלאה או ללחוץ לבחירה")
+    st.markdown(f"**סוגי קבצים נתמכים:** {', '.join(SUPPORTED_FILE_TYPES).upper()}")
 
-    uploaded_tabu = st.file_uploader("נסח טאבו (תמונה סרוקה)", type=["png", "jpg", "jpeg", "tiff", "bmp"], key="tabu")
-    uploaded_municipal = st.file_uploader("מסמך עירייה (תמונה סרוקה)", type=["png", "jpg", "jpeg", "tiff", "bmp"], key="municipal")
+    st.markdown("---")
 
+    # === REQUIRED DOCUMENTS ===
+    st.subheader("📋 מסמכים נדרשים")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**תעודות זהות מוכרים**")
+        seller_id_files = st.file_uploader(
+            "העלה תעודות זהות של כל המוכרים",
+            type=SUPPORTED_FILE_TYPES,
+            accept_multiple_files=True,
+            key="seller_ids_upload",
+            help="גרור קבצים לכאן או לחץ לבחירה"
+        )
+        if seller_id_files:
+            st.session_state.uploaded_docs["seller_ids"] = seller_id_files
+            st.success(f"הועלו {len(seller_id_files)} קבצים")
+
+    with col2:
+        st.markdown("**תעודות זהות קונים**")
+        buyer_id_files = st.file_uploader(
+            "העלה תעודות זהות של כל הקונים",
+            type=SUPPORTED_FILE_TYPES,
+            accept_multiple_files=True,
+            key="buyer_ids_upload",
+            help="גרור קבצים לכאן או לחץ לבחירה"
+        )
+        if buyer_id_files:
+            st.session_state.uploaded_docs["buyer_ids"] = buyer_id_files
+            st.success(f"הועלו {len(buyer_id_files)} קבצים")
+
+    st.markdown("---")
+
+    # === PROPERTY DOCUMENTS ===
+    st.subheader("🏠 מסמכי נכס")
+
+    col3, col4 = st.columns(2)
+
+    with col3:
+        st.markdown("**נסח טאבו**")
+        uploaded_tabu = st.file_uploader(
+            "נסח רישום מקרקעין",
+            type=SUPPORTED_FILE_TYPES,
+            key="tabu_upload"
+        )
+        if uploaded_tabu:
+            st.session_state.uploaded_docs["tabu"] = uploaded_tabu
+
+    with col4:
+        st.markdown("**אישור עירייה / ועד בית**")
+        uploaded_municipal = st.file_uploader(
+            "מסמך עירייה או ועד בית",
+            type=SUPPORTED_FILE_TYPES,
+            key="municipal_upload"
+        )
+        if uploaded_municipal:
+            st.session_state.uploaded_docs["municipal"] = uploaded_municipal
+
+    col5, col6 = st.columns(2)
+
+    with col5:
+        st.markdown("**אישור ארנונה**")
+        uploaded_arnona = st.file_uploader(
+            "אישור תשלום ארנונה",
+            type=SUPPORTED_FILE_TYPES,
+            key="arnona_upload"
+        )
+        if uploaded_arnona:
+            st.session_state.uploaded_docs["arnona"] = uploaded_arnona
+
+    with col6:
+        st.markdown("**חוזה רכישה קודם (אופציונלי)**")
+        uploaded_purchase = st.file_uploader(
+            "חוזה רכישה מקורי של המוכר",
+            type=SUPPORTED_FILE_TYPES,
+            key="purchase_upload"
+        )
+        if uploaded_purchase:
+            st.session_state.uploaded_docs["purchase_agreement"] = uploaded_purchase
+
+    st.markdown("---")
+
+    # === OTHER DOCUMENTS ===
+    st.subheader("📎 מסמכים נוספים")
+    other_files = st.file_uploader(
+        "העלה מסמכים נוספים רלוונטיים",
+        type=SUPPORTED_FILE_TYPES,
+        accept_multiple_files=True,
+        key="other_upload",
+        help="ניתן להעלות כל מסמך נוסף שרלוונטי לעסקה"
+    )
+    if other_files:
+        st.session_state.uploaded_docs["other"] = other_files
+        st.success(f"הועלו {len(other_files)} מסמכים נוספים")
+
+    st.markdown("---")
+
+    # === PROCESS OCR ===
     if st.button("🔍 עבד מסמכים (OCR)", type="primary"):
         os.makedirs("artifacts", exist_ok=True)
         ocr_results = {}
 
-        if uploaded_tabu:
-            tabu_path = f"artifacts/uploaded_tabu.{uploaded_tabu.name.split('.')[-1]}"
+        # Process Tabu
+        if st.session_state.uploaded_docs.get("tabu"):
+            uploaded_tabu = st.session_state.uploaded_docs["tabu"]
+            ext = uploaded_tabu.name.split('.')[-1].lower()
+            tabu_path = f"artifacts/uploaded_tabu.{ext}"
             with open(tabu_path, "wb") as f:
                 f.write(uploaded_tabu.read())
-            st.info("מעבד נסח טאבו...")
-            text = extract_text_from_image(tabu_path)
-            parsed = parse_tabu_document(text)
-            ocr_results.update(parsed)
-            st.json(parsed)
 
-        if uploaded_municipal:
-            muni_path = f"artifacts/uploaded_municipal.{uploaded_municipal.name.split('.')[-1]}"
+            if ext in ["png", "jpg", "jpeg", "tiff", "bmp"]:
+                st.info("מעבד נסח טאבו...")
+                text = extract_text_from_image(tabu_path)
+                parsed = parse_tabu_document(text)
+                ocr_results.update(parsed)
+                st.json(parsed)
+            else:
+                st.info(f"קובץ {ext.upper()} נשמר (לא בוצע OCR)")
+
+        # Process Municipal
+        if st.session_state.uploaded_docs.get("municipal"):
+            uploaded_municipal = st.session_state.uploaded_docs["municipal"]
+            ext = uploaded_municipal.name.split('.')[-1].lower()
+            muni_path = f"artifacts/uploaded_municipal.{ext}"
             with open(muni_path, "wb") as f:
                 f.write(uploaded_municipal.read())
-            st.info("מעבד מסמך עירייה...")
-            text = extract_text_from_image(muni_path)
-            parsed = parse_municipal_document(text)
-            ocr_results.update(parsed)
-            st.json(parsed)
+
+            if ext in ["png", "jpg", "jpeg", "tiff", "bmp"]:
+                st.info("מעבד מסמך עירייה...")
+                text = extract_text_from_image(muni_path)
+                parsed = parse_municipal_document(text)
+                ocr_results.update(parsed)
+                st.json(parsed)
+            else:
+                st.info(f"קובץ {ext.upper()} נשמר (לא בוצע OCR)")
+
+        # Save other documents
+        for doc_type in ["arnona", "purchase_agreement"]:
+            if st.session_state.uploaded_docs.get(doc_type):
+                doc = st.session_state.uploaded_docs[doc_type]
+                ext = doc.name.split('.')[-1].lower()
+                doc_path = f"artifacts/uploaded_{doc_type}.{ext}"
+                with open(doc_path, "wb") as f:
+                    f.write(doc.read())
+                st.info(f"נשמר: {doc_type}")
 
         if ocr_results:
             st.session_state.ocr_data = ocr_results
             st.success(f"עובדו {len(ocr_results)} שדות מהמסמכים")
         else:
-            st.warning("לא הועלו מסמכים")
+            st.info("המסמכים נשמרו בהצלחה")
+
+    # Show summary of uploaded documents
+    st.markdown("---")
+    st.subheader("סיכום מסמכים שהועלו")
+    docs = st.session_state.uploaded_docs
+    summary = []
+    if docs.get("seller_ids"):
+        summary.append(f"✅ תעודות זהות מוכרים: {len(docs['seller_ids'])}")
+    if docs.get("buyer_ids"):
+        summary.append(f"✅ תעודות זהות קונים: {len(docs['buyer_ids'])}")
+    if docs.get("tabu"):
+        summary.append("✅ נסח טאבו")
+    if docs.get("municipal"):
+        summary.append("✅ מסמך עירייה")
+    if docs.get("arnona"):
+        summary.append("✅ אישור ארנונה")
+    if docs.get("purchase_agreement"):
+        summary.append("✅ חוזה רכישה קודם")
+    if docs.get("other"):
+        summary.append(f"✅ מסמכים נוספים: {len(docs['other'])}")
+
+    if summary:
+        for item in summary:
+            st.markdown(item)
+    else:
+        st.info("טרם הועלו מסמכים")
 
 
 elif page == "✅ אימות נתונים":
@@ -186,6 +490,23 @@ elif page == "✅ אימות נתונים":
     if not st.session_state.client_data:
         st.warning("יש להזין נתונים תחילה בשלב 'הזנת נתונים'")
     else:
+        # Show current data summary
+        st.subheader("סיכום נתונים שהוזנו")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**מוכרים:** {len(st.session_state.sellers)}")
+            for i, s in enumerate(st.session_state.sellers):
+                st.markdown(f"  {i+1}. {s.get('name', 'לא הוזן')} ({s.get('id', '')})")
+        with col2:
+            st.markdown(f"**קונים:** {len(st.session_state.buyers)}")
+            for i, b in enumerate(st.session_state.buyers):
+                st.markdown(f"  {i+1}. {b.get('name', 'לא הוזן')} ({b.get('id', '')})")
+
+        st.markdown(f"**נכס:** {st.session_state.property_data.get('address', 'לא הוזן')}")
+        st.markdown(f"**מחיר:** {st.session_state.transaction_data.get('price', 0):,} ₪")
+
+        st.markdown("---")
+
         if st.button("🔍 בצע אימות", type="primary"):
             result = run_validation(st.session_state.client_data)
             st.session_state.validation_result = result
@@ -218,6 +539,8 @@ elif page == "📋 יצירת חוזה":
     if not st.session_state.client_data:
         st.warning("יש להזין נתונים תחילה")
     else:
+        st.info("לאחר השלמת כל התיקונים, תוכל להעלות תבנית חוזה מותאמת אישית")
+
         if st.button("🚀 הפעל תהליך מלא", type="primary"):
             progress = st.progress(0)
             status = st.empty()
@@ -229,6 +552,11 @@ elif page == "📋 יצירת חוזה":
                 st.session_state.client_data,
                 st.session_state.ocr_data or None,
             )
+            # Add seller declaration notes
+            clean_data["seller_declaration_notes"] = st.session_state.seller_notes
+            clean_data["all_sellers"] = st.session_state.sellers
+            clean_data["all_buyers"] = st.session_state.buyers
+
             st.session_state.clean_data = clean_data
             os.makedirs("artifacts", exist_ok=True)
 
@@ -252,6 +580,8 @@ elif page == "📋 יצירת חוזה":
                 "floor": clean_data.get("floor", 0),
                 "rooms": clean_data.get("rooms", 0),
                 "area_sqm": clean_data.get("area_sqm", 0),
+                "num_sellers": len(st.session_state.sellers),
+                "num_buyers": len(st.session_state.buyers),
             }
             pd.DataFrame([features]).to_csv("artifacts/features.csv", index=False)
 
