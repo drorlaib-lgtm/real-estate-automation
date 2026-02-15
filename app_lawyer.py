@@ -161,6 +161,13 @@ elif page == "👀 סקירת נתונים":
                     st.markdown(f"**אימייל:** {buyer.get('email', '')}")
                     st.markdown(f"**מצב משפחתי:** {marital.get(buyer.get('marital_status', ''), '')}")
 
+        if tx.get("buyer_lawyer") or tx.get("buyer_lawyer_email"):
+            col_bl1, col_bl2 = st.columns(2)
+            with col_bl1:
+                st.markdown(f"**עו\"ד הקונה:** {tx.get('buyer_lawyer', '')}")
+            with col_bl2:
+                st.markdown(f"**מייל עו\"ד הקונה:** {tx.get('buyer_lawyer_email', '')}")
+
         # PROPERTY
         st.subheader("פרטי הנכס")
         prop = tx.get("property", {})
@@ -234,10 +241,21 @@ elif page == "📝 יצירת חוזה":
             progress.progress(20)
 
             # Convert to clean_data format
-            primary_seller = tx["sellers"][0] if tx.get("sellers") else {}
-            primary_buyer = tx["buyers"][0] if tx.get("buyers") else {}
+            sellers = tx.get("sellers", [])
+            buyers = tx.get("buyers", [])
+            primary_seller = sellers[0] if sellers else {}
+            secondary_seller = sellers[1] if len(sellers) > 1 else {}
+            primary_buyer = buyers[0] if buyers else {}
+            secondary_buyer = buyers[1] if len(buyers) > 1 else {}
             prop = tx.get("property", {})
             trans = tx.get("transaction", {})
+
+            # Calculate payment schedule
+            price_val = trans.get("price", 0)
+            payment_1 = int(price_val * 0.10)  # 10%
+            payment_2 = int(price_val * 0.45)  # 45%
+            payment_3 = int(price_val * 0.45)  # 45%
+            escrow_amount = int(price_val * 0.15)  # 15% of total
 
             client_data = {
                 "seller_name": primary_seller.get("name", ""),
@@ -246,12 +264,19 @@ elif page == "📝 יצירת חוזה":
                 "seller_phone": primary_seller.get("phone", ""),
                 "seller_email": primary_seller.get("email", ""),
                 "seller_marital_status": primary_seller.get("marital_status", ""),
+                "seller2_name": secondary_seller.get("name", ""),
+                "seller2_id": secondary_seller.get("id", ""),
                 "buyer_name": primary_buyer.get("name", ""),
                 "buyer_id": primary_buyer.get("id", ""),
                 "buyer_address": primary_buyer.get("address", ""),
                 "buyer_phone": primary_buyer.get("phone", ""),
                 "buyer_email": primary_buyer.get("email", ""),
                 "buyer_marital_status": primary_buyer.get("marital_status", ""),
+                "buyer2_name": secondary_buyer.get("name", ""),
+                "buyer2_id": secondary_buyer.get("id", ""),
+                "buyer_lawyer": trans.get("buyer_lawyer", ""),
+                "buyer_lawyer_email": trans.get("buyer_lawyer_email", ""),
+                "mortgage_bank": trans.get("mortgage_bank", ""),
                 "property_address": prop.get("address", ""),
                 "block_number": prop.get("block_number", ""),
                 "parcel_number": prop.get("parcel_number", ""),
@@ -263,12 +288,16 @@ elif page == "📝 יצירת חוזה":
                 "parking": prop.get("parking", "none"),
                 "storage": prop.get("storage", "no"),
                 "price": str(trans.get("price", "")),
+                "payment_1": payment_1,
+                "payment_2": payment_2,
+                "payment_3": payment_3,
+                "escrow_amount": escrow_amount,
                 "signing_date": trans.get("signing_date", ""),
                 "delivery_date": trans.get("delivery_date", ""),
                 "notes": tx.get("seller_notes", ""),
                 "seller_declaration_notes": tx.get("seller_notes", ""),
-                "all_sellers": tx.get("sellers", []),
-                "all_buyers": tx.get("buyers", []),
+                "all_sellers": sellers,
+                "all_buyers": buyers,
             }
 
             status.text("מנקה ומעבד נתונים...")

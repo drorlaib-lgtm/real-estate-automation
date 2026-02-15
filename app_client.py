@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from email_service import send_notification_email
 from drive_service import create_transaction_folder, upload_json, upload_bytes
+from template_filler import fill_template
+import io
 
 # Page config
 st.set_page_config(
@@ -25,30 +27,19 @@ st.set_page_config(
     layout="wide",
 )
 
-# RTL CSS + Drag & Drop styling
+# RTL CSS only (no JavaScript to avoid loading issues)
 st.markdown("""
 <style>
     .stApp { direction: rtl; }
-    .stMarkdown, .stText, label, .stSelectbox, .stTextInput, .stNumberInput { direction: rtl; text-align: right; }
+    .main .block-container { direction: rtl; text-align: right; }
+    .stMarkdown, .stMarkdown p { direction: rtl; text-align: right; }
+    .stTextInput label, .stSelectbox label, .stDateInput label,
+    .stNumberInput label, .stTextArea label { text-align: right; }
+    .stTextInput input, .stNumberInput input, .stTextArea textarea { direction: rtl; text-align: right; }
+    [data-testid="stHorizontalBlock"] { flex-direction: row-reverse; }
     h1, h2, h3 { text-align: center; }
-    .stProgress > div > div { direction: ltr; }
-    [data-testid="stFileUploader"] {
-        border: 2px dashed #ccc;
-        border-radius: 10px;
-        padding: 20px;
-        text-align: center;
-    }
-    [data-testid="stFileUploader"]:hover {
-        border-color: #1f77b4;
-        background-color: #f0f8ff;
-    }
-    /* Hide streamlit branding */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
+    #MainMenu, footer { visibility: hidden; }
 </style>
-<script>
-    window.scrollTo(0, 0);
-</script>
 """, unsafe_allow_html=True)
 
 st.title("🏠 טופס פרטי עסקת נדל\"ן")
@@ -151,6 +142,22 @@ if page == "📝 הזנת נתונים":
         st.session_state.buyers.append({"name": "", "id": "", "address": "", "phone": "", "email": "", "marital_status": ""})
         st.rerun()
 
+    col_bl1, col_bl2 = st.columns(2)
+    with col_bl1:
+        st.session_state.transaction_data["buyer_lawyer_email"] = st.text_input(
+            "מייל עו\"ד הקונה",
+            value=st.session_state.transaction_data.get("buyer_lawyer_email", ""),
+            key="buyer_lawyer_email_input",
+            placeholder="lawyer@example.com",
+        )
+    with col_bl2:
+        st.session_state.transaction_data["buyer_lawyer"] = st.text_input(
+            "שם עו\"ד הקונה",
+            value=st.session_state.transaction_data.get("buyer_lawyer", ""),
+            key="buyer_lawyer_input",
+            placeholder="שם עורך הדין של הקונה",
+        )
+
     st.markdown("---")
 
     # PROPERTY
@@ -207,7 +214,30 @@ if page == "📝 הזנת נתונים":
             try: default_del = date.fromisoformat(trans["delivery_date"])
             except: pass
         trans["delivery_date"] = st.date_input("תאריך מסירה *", value=default_del, key="del_date").strftime("%Y-%m-%d")
+
+    trans["mortgage_bank"] = st.text_input("בנק משכנתא", value=trans.get("mortgage_bank", ""), placeholder="לדוגמה: בנק לאומי", key="mortgage_bank_input")
+
     st.session_state.transaction_data = trans
+
+    # Display calculated payment schedule (read-only)
+    price = trans.get("price", 0)
+    if price > 0:
+        st.markdown("---")
+        st.subheader("לוח תשלומים (חישוב אוטומטי)")
+        payment_1 = int(price * 0.10)  # 10%
+        payment_2 = int(price * 0.45)  # 45%
+        payment_3 = int(price * 0.45)  # 45%
+        escrow_amount = int(price * 0.15)  # 15% of total
+
+        col_pay1, col_pay2, col_pay3 = st.columns(3)
+        with col_pay1:
+            st.metric("תשלום ראשון (10%)", f"₪{payment_1:,}")
+        with col_pay2:
+            st.metric("תשלום שני (45%)", f"₪{payment_2:,}")
+        with col_pay3:
+            st.metric("תשלום אחרון (45%)", f"₪{payment_3:,}")
+
+        st.info(f"💰 סכום נאמנות (15% מסך העסקה): ₪{escrow_amount:,}")
 
     st.markdown("---")
 
@@ -409,9 +439,28 @@ elif page == "✉️ שליחה":
                             upload_bytes(files.read(), file_name, folder_id)
                             files_uploaded += 1
 
-                # Step 5: Send email notification
+                # Step 5: Generate contract from template
+                status.text("מייצר חוזה מתבנית...")
+                progress.progress(70)
+
+                # Fill template with transaction data
+                doc = fill_template(data)
+
+                # Save to bytes buffer
+                contract_buffer = io.BytesIO()
+                doc.save(contract_buffer)
+                contract_buffer.seek(0)
+
+                # Upload contract to Google Drive
+                status.text("מעלה חוזה לגוגל דרייב...")
+                progress.progress(85)
+
+                contract_filename = f"חוזה_מכר_{property_address.replace(' ', '_')}.docx"
+                upload_bytes(contract_buffer.read(), contract_filename, folder_id)
+
+                # Step 6: Send email notification
                 status.text("שולח התראה לעורך הדין...")
-                progress.progress(80)
+                progress.progress(95)
 
                 email_result = send_notification_email(
                     seller_name=seller_name,
@@ -428,12 +477,13 @@ elif page == "✉️ שליחה":
                 st.markdown("---")
                 st.markdown("### סיכום:")
                 st.markdown(f"📁 **תיקייה בגוגל דרייב:** [{folder_info['folder_name']}]({folder_link})")
+                st.markdown(f"📄 **חוזה נוצר:** {contract_filename}")
                 st.markdown(f"📎 **מסמכים שהועלו:** {files_uploaded}")
                 st.markdown(f"📧 **התראה לעורך הדין:** {email_result.get('message', 'נשלחה')}")
 
                 st.markdown("---")
                 st.markdown("### מה קורה עכשיו?")
-                st.markdown("עורך הדין יקבל התראה ויכין את החוזה. תקבל/י עדכון כשהחוזה יהיה מוכן.")
+                st.markdown("החוזה נוצר אוטומטית והועלה לתיקייה. עורך הדין יקבל התראה ויבדוק את החוזה.")
 
             except Exception as e:
                 st.error(f"❌ שגיאה: {str(e)}")

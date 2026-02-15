@@ -1,164 +1,246 @@
-"""Contract Builder Tool - Generates Hebrew legal contracts as DOCX."""
+"""Contract Builder Tool - Fills the reca agreement.docx template with transaction data."""
 
 import os
 import json
-from datetime import datetime
+import re
+import copy
+from pathlib import Path
 
 from docx import Document
-from docx.shared import Pt, Cm
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from crewai.tools import tool
+
+# Path to the contract template
+TEMPLATE_PATH = Path(__file__).parent.parent.parent.parent / "templates" / "reca_agreement.docx"
 
 
 def number_to_hebrew_words(n: int) -> str:
-    """Convert number to Hebrew words (simplified)."""
-    units = ["", "אחד", "שניים", "שלושה", "ארבעה", "חמישה", "שישה", "שבעה", "שמונה", "תשעה"]
-    tens = ["", "עשר", "עשרים", "שלושים", "ארבעים", "חמישים", "שישים", "שבעים", "שמונים", "תשעים"]
-    if n < 10:
-        return units[n]
-    if n < 100:
-        t, u = divmod(n, 10)
-        return f"{tens[t]} ו{units[u]}" if u else tens[t]
-    return str(n)
+    """Convert number to Hebrew words for contract amounts."""
+    if n == 0:
+        return "אפס ש\"ח"
+
+    units_w = {
+        1: "אחד", 2: "שניים", 3: "שלושה", 4: "ארבעה", 5: "חמישה",
+        6: "שישה", 7: "שבעה", 8: "שמונה", 9: "תשעה",
+    }
+    tens_w = {
+        10: "עשרה", 20: "עשרים", 30: "שלושים", 40: "ארבעים", 50: "חמישים",
+        60: "שישים", 70: "שבעים", 80: "שמונים", 90: "תשעים",
+    }
+    hundred_w = {
+        100: "מאה", 200: "מאתיים", 300: "שלוש מאות", 400: "ארבע מאות",
+        500: "חמש מאות", 600: "שש מאות", 700: "שבע מאות",
+        800: "שמונה מאות", 900: "תשע מאות",
+    }
+
+    def _small(num):
+        """Convert 1-999 to Hebrew words."""
+        if num == 0:
+            return ""
+        result = []
+        if num >= 100:
+            h = (num // 100) * 100
+            result.append(hundred_w[h])
+            num %= 100
+        if num >= 10:
+            t = (num // 10) * 10
+            u = num % 10
+            if u:
+                result.append(f"{tens_w[t]} ו{units_w[u]}")
+            else:
+                result.append(tens_w[t])
+        elif num > 0:
+            result.append(units_w[num])
+        return " ".join(result)
+
+    parts = []
+
+    # Millions
+    if n >= 1_000_000:
+        m = n // 1_000_000
+        n %= 1_000_000
+        if m == 1:
+            parts.append("מיליון")
+        elif m == 2:
+            parts.append("שני מיליון")
+        else:
+            parts.append(f"{_small(m)} מיליון")
+
+    # Thousands
+    if n >= 1000:
+        t = n // 1000
+        n %= 1000
+        if t == 1:
+            parts.append("אלף")
+        elif t == 2:
+            parts.append("אלפיים")
+        else:
+            parts.append(f"{_small(t)} אלפים")
+
+    # Hundreds/tens/units
+    rest = _small(n)
+    if rest:
+        parts.append(rest)
+
+    return " ".join(parts) + " ש\"ח"
 
 
-def format_price_hebrew(price: float) -> str:
-    """Format price with Hebrew notation."""
-    return f"{price:,.0f} ₪ ({number_to_hebrew_words(int(price // 1000000))} מיליון ש\"ח)" if price >= 1000000 else f"{price:,.0f} ₪"
+def format_price_hebrew(price) -> str:
+    """Format price: 2,500,000 ₪ (שני מיליון וחמש מאות אלף ש\"ח)."""
+    price = int(float(price)) if price else 0
+    return f"{price:,} ₪ ({number_to_hebrew_words(price)})"
+
+
+def _replace_in_paragraph(paragraph, replacements: dict):
+    """Replace placeholders in a paragraph, handling split runs.
+
+    DOCX often splits placeholder text across multiple runs (e.g. '{{', 'FIELD', '}}').
+    This function joins all runs, performs replacements, and redistributes.
+    """
+    full_text = "".join(run.text for run in paragraph.runs)
+    if not full_text:
+        return
+
+    new_text = full_text
+    changed = False
+    for placeholder, value in replacements.items():
+        if placeholder in new_text:
+            new_text = new_text.replace(placeholder, str(value))
+            changed = True
+
+    if changed and paragraph.runs:
+        # Put the full replaced text in the first run, clear the rest
+        paragraph.runs[0].text = new_text
+        for run in paragraph.runs[1:]:
+            run.text = ""
+
+
+def build_replacements(data: dict) -> dict:
+    """Build the placeholder -> value mapping from transaction data."""
+    price = int(float(data.get("price", 0) or 0))
+
+    # Payment schedule: default 10% / tax advance / remainder
+    payment_1 = data.get("payment_1", "")
+    payment_2 = data.get("payment_2", "")
+    payment_3 = data.get("payment_3", "")
+
+    if not payment_1 and price:
+        payment_1 = f"{int(price * 0.10):,} ₪"
+    if not payment_2 and price:
+        payment_2 = f"{int(price * 0.15):,} ₪"
+    if not payment_3 and price:
+        payment_3 = f"{int(price - int(price * 0.10) - int(price * 0.15)):,} ₪"
+
+    escrow_amount = data.get("escrow_amount", "")
+    if not escrow_amount and price:
+        escrow_amount = f"{int(price * 0.10):,}"
+
+    # Storage text
+    storage_val = data.get("storage", "no")
+    storage_text = "מחסן" if storage_val == "yes" else ""
+
+    # Parking text
+    parking_map = {
+        "none": "ללא",
+        "covered": "מקורה",
+        "uncovered": "לא מקורה",
+        "underground": "תת-קרקעית"
+    }
+    parking_val = data.get("parking", "none")
+    parking_text = parking_map.get(parking_val, "ללא")
+
+    # Seller notes
+    seller_notes = (
+        data.get("seller_declaration_notes", "")
+        or data.get("notes", "")
+        or ""
+    )
+
+    replacements = {
+        # Well-formed placeholders
+        "{{SIGNING_DATE}}": data.get("signing_date", "________"),
+        "{{SELLER_NAME}}": data.get("seller_name", "________"),
+        "{{SELLER_ID}}": data.get("seller_id", "________"),
+        "{{SELLER_ADDRESS}}": data.get("seller_address", "________"),
+        "{{SELLER_PHONE}}": data.get("seller_phone", "________"),
+        "{{SELLER_EMAIL}}": data.get("seller_email", "________"),
+        "{{SELLER2_NAME}}": data.get("seller2_name", "________"),
+        "{{SELLER2_ID}}": data.get("seller2_id", "________"),
+        "{{BUYER_NAME}}": data.get("buyer_name", "________"),
+        "{{BUYER_ID}}": data.get("buyer_id", "________"),
+        "{{BUYER_ADDRESS}}": data.get("buyer_address", "________"),
+        "{{BUYER_PHONE}}": data.get("buyer_phone", "________"),
+        "{{BUYER_EMAIL}}": data.get("buyer_email", "________"),
+        "{{BUYER2_NAME}}": data.get("buyer2_name", "________"),
+        "{{BUYER2_ID}}": data.get("buyer2_id", "________"),
+        "{{ROOMS}}": str(data.get("rooms", "____")),
+        "{{FLOOR}}": str(data.get("floor", "____")),
+        "{{PROPERTY_ADDRESS}}": data.get("property_address", "________"),
+        "{{STORAGE}}": storage_text,
+        "{{PARKING}}": parking_text,
+        "{{BLOCK}}": str(data.get("block_number", "____")),
+        "{{PARCEL}}": str(data.get("parcel_number", "____")),
+        "{{SUB_PARCEL}}": str(data.get("sub_parcel", "____")),
+        "{{DELIVERY_DATE}}": data.get("delivery_date", "________"),
+        "{{SELLER_NOTES}}": seller_notes,
+        "{{PRICE}}": f"{price:,}",
+        "{{PRICE_WORDS}}": number_to_hebrew_words(price),
+        "{{PAYMENT_1}}": str(payment_1),
+        "{{PAYMENT_2}}": str(payment_2),
+        "{{PAYMENT_3}}": str(payment_3),
+        "{{ESCROW_AMOUNT}}": str(escrow_amount),
+        "{{BUYER_LAWYER}}": data.get("buyer_lawyer", "________"),
+        "{{BUYER_LAWYER_EMAIL}}": data.get("buyer_lawyer_email", "________"),
+        "{{MORTGAGE_BANK}}": data.get("mortgage_bank", "________"),
+
+        # Malformed placeholders found in the template
+        "{{ SELLER _EMAIL}": data.get("seller_email", "________"),
+        "{{BUYER_EMAIL}": data.get("buyer_email", "________"),
+        "{PRICE}}": f"{price:,}",
+    }
+
+    return replacements
 
 
 def build_contract_document(data: dict, variation: str = "standard") -> Document:
-    """Build a complete Hebrew real estate contract as a DOCX document."""
-    doc = Document()
+    """Fill the reca agreement.docx template with transaction data.
 
-    # Set default RTL style
-    style = doc.styles["Normal"]
-    style.font.name = "David"
-    style.font.size = Pt(12)
+    Args:
+        data: Flat transaction data dict.
+        variation: Ignored (kept for API compatibility). Template is always the same.
 
-    # Title
-    title = doc.add_heading("חוזה מכר דירה", level=0)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    Returns:
+        Filled Document object.
+    """
+    if not TEMPLATE_PATH.exists():
+        raise FileNotFoundError(f"תבנית חוזה לא נמצאה: {TEMPLATE_PATH}")
 
-    doc.add_paragraph(f'נערך ונחתם ביום {data.get("signing_date", "_________")}')
-    doc.add_paragraph("")
+    doc = Document(str(TEMPLATE_PATH))
+    replacements = build_replacements(data)
 
-    # Parties
-    doc.add_heading("בין הצדדים:", level=1)
-    doc.add_paragraph(
-        f'שם: {data.get("seller_name", "_________")}\n'
-        f'ת.ז.: {data.get("seller_id", "_________")}\n'
-        f'כתובת: {data.get("seller_address", "_________")}\n'
-        f'טלפון: {data.get("seller_phone", "_________")}\n'
-        f'דוא"ל: {data.get("seller_email", "_________")}\n'
-        f'(להלן: "המוכר")'
-    )
-    doc.add_paragraph("לבין:")
-    doc.add_paragraph(
-        f'שם: {data.get("buyer_name", "_________")}\n'
-        f'ת.ז.: {data.get("buyer_id", "_________")}\n'
-        f'כתובת: {data.get("buyer_address", "_________")}\n'
-        f'טלפון: {data.get("buyer_phone", "_________")}\n'
-        f'דוא"ל: {data.get("buyer_email", "_________")}\n'
-        f'(להלן: "הקונה")'
-    )
+    # Replace in all paragraphs
+    for paragraph in doc.paragraphs:
+        _replace_in_paragraph(paragraph, replacements)
 
-    # Preamble
-    doc.add_heading("הואיל:", level=1)
-    doc.add_paragraph(
-        f'והמוכר הינו הבעלים הרשום של דירה בכתובת {data.get("property_address", "_________")}, '
-        f'הידועה כגוש {data.get("block_number", "_____")} '
-        f'חלקה {data.get("parcel_number", "_____")} '
-        f'{"תת-חלקה " + str(data.get("sub_parcel", "")) if data.get("sub_parcel") else ""} '
-        f'בשטח של {data.get("area_sqm", "_____")} מ"ר (להלן: "הדירה");'
-    )
-    doc.add_paragraph("והמוכר מעוניין למכור את הדירה והקונה מעוניין לרכוש אותה;")
-    doc.add_paragraph("לפיכך הוסכם, הותנה והוצהר בין הצדדים כדלקמן:")
+    # Replace in tables (if any)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    _replace_in_paragraph(paragraph, replacements)
 
-    # Section 1: Declarations
-    doc.add_heading("1. הצהרות המוכר", level=1)
-    declarations = [
-        "המוכר מצהיר כי הוא הבעלים הבלעדי והחוקי של הדירה.",
-        "הדירה נקייה מכל שעבוד, עיקול, משכנתא או זכות צד שלישי כלשהי." if not data.get("has_mortgage") else "על הדירה רשומה משכנתא אשר תוסר עד למועד המסירה.",
-        "לא קיימות חריגות בנייה בדירה." if not data.get("has_violations") else "קיימות חריגות בנייה כמפורט בנספח.",
-        "המוכר מתחייב למסור את הדירה כשהיא פנויה מכל אדם וחפץ.",
-        f'הדירה כוללת {data.get("rooms", "_")} חדרים, בקומה {data.get("floor", "_")}.',
-    ]
-    if data.get("parking") and data["parking"] != "none":
-        parking_types = {"covered": "מקורה", "uncovered": "לא מקורה", "underground": "תת-קרקעית"}
-        declarations.append(f'הדירה כוללת חניה {parking_types.get(data["parking"], data["parking"])}.')
-    if data.get("storage") == "yes":
-        declarations.append("הדירה כוללת מחסן.")
-
-    for i, decl in enumerate(declarations, 1):
-        doc.add_paragraph(f"1.{i} {decl}")
-
-    # Section 2: Price
-    price = data.get("price", 0)
-    doc.add_heading("2. התמורה", level=1)
-    doc.add_paragraph(f"2.1 מחיר הדירה הוסכם על סך של {format_price_hebrew(price)}.")
-
-    if variation == "standard":
-        doc.add_paragraph("2.2 התמורה תשולם בתשלומים כדלקמן:")
-        doc.add_paragraph(f"   א. במעמד החתימה: {format_price_hebrew(price * 0.10)} (10%)")
-        doc.add_paragraph(f"   ב. תוך 30 יום: {format_price_hebrew(price * 0.30)} (30%)")
-        doc.add_paragraph(f"   ג. במעמד המסירה: {format_price_hebrew(price * 0.60)} (60%)")
-    elif variation == "mortgage":
-        doc.add_paragraph("2.2 התמורה תשולם בתשלומים כדלקמן:")
-        doc.add_paragraph(f"   א. במעמד החתימה: {format_price_hebrew(price * 0.10)} (10%)")
-        doc.add_paragraph(f"   ב. תוך 30 יום: {format_price_hebrew(price * 0.15)} (15%)")
-        doc.add_paragraph(f"   ג. ממשכנתא: {format_price_hebrew(price * 0.50)} (50%)")
-        doc.add_paragraph(f"   ד. במעמד המסירה: {format_price_hebrew(price * 0.25)} (25%)")
-
-    # Section 3: Delivery
-    doc.add_heading("3. מסירת החזקה", level=1)
-    doc.add_paragraph(f'3.1 המוכר מתחייב למסור את החזקה בדירה לקונה ביום {data.get("delivery_date", "_________")}.')
-    doc.add_paragraph("3.2 הדירה תימסר כשהיא פנויה מכל אדם וחפץ, במצבה כפי שהיא (AS IS).")
-    doc.add_paragraph("3.3 איחור של עד 14 יום במסירה לא ייחשב כהפרה.")
-
-    # Section 4: Taxes
-    doc.add_heading("4. מיסים", level=1)
-    doc.add_paragraph("4.1 מס שבח - ישולם על ידי המוכר.")
-    doc.add_paragraph("4.2 מס רכישה - ישולם על ידי הקונה.")
-    doc.add_paragraph("4.3 היטל השבחה - ישולם על ידי המוכר.")
-    doc.add_paragraph("4.4 כל מס או היטל אחר יחול על הצד שהחוק מטיל עליו.")
-
-    # Section 5: Breach
-    doc.add_heading("5. הפרות וסעדים", level=1)
-    doc.add_paragraph("5.1 הפרה יסודית של חוזה זה תזכה את הצד הנפגע בפיצוי מוסכם בסך 10% ממחיר העסקה.")
-    doc.add_paragraph(f"5.2 סכום הפיצוי המוסכם: {format_price_hebrew(price * 0.10)}.")
-    doc.add_paragraph("5.3 אין בפיצוי המוסכם כדי לגרוע מזכות הצד הנפגע לתבוע פיצויים בגין נזקים בפועל.")
-
-    # Section 6: General
-    doc.add_heading("6. כללי", level=1)
-    doc.add_paragraph("6.1 חוזה זה מהווה את ההסכם המלא בין הצדדים ומבטל כל הסכם או הבנה קודמים.")
-    doc.add_paragraph("6.2 כל שינוי בחוזה זה יעשה בכתב ובחתימת שני הצדדים.")
-    doc.add_paragraph("6.3 סמכות השיפוט הבלעדית נתונה לבתי המשפט במחוז בו נמצאת הדירה.")
-    doc.add_paragraph("6.4 חוזה זה נערך בשני עותקים, עותק אחד לכל צד.")
-
-    if data.get("notes"):
-        doc.add_heading("7. הערות נוספות", level=1)
-        doc.add_paragraph(data["notes"])
-
-    # Signatures
-    doc.add_paragraph("")
-    doc.add_paragraph("ולראיה באו הצדדים על החתום:")
-    doc.add_paragraph("")
-    table = doc.add_table(rows=3, cols=2)
-    table.cell(0, 0).text = "המוכר"
-    table.cell(0, 1).text = "הקונה"
-    table.cell(1, 0).text = f'שם: {data.get("seller_name", "_________")}'
-    table.cell(1, 1).text = f'שם: {data.get("buyer_name", "_________")}'
-    table.cell(2, 0).text = "חתימה: _________"
-    table.cell(2, 1).text = "חתימה: _________"
+    # Replace in headers/footers
+    for section in doc.sections:
+        for header_footer in [section.header, section.footer]:
+            if header_footer:
+                for paragraph in header_footer.paragraphs:
+                    _replace_in_paragraph(paragraph, replacements)
 
     return doc
 
 
 @tool("build_contract")
 def build_contract(clean_data_json: str, variation: str = "standard") -> str:
-    """Build a complete Hebrew real estate contract in DOCX format.
-    variation: 'standard' or 'mortgage' for different payment schedules.
+    """Build a Hebrew real estate contract by filling the template.
     Returns path to the generated contract file."""
     data = json.loads(clean_data_json)
     doc = build_contract_document(data, variation)

@@ -53,11 +53,19 @@ def merge_and_clean(client_data: dict, ocr_data: dict = None) -> dict:
     merged["seller_email"] = str(client_data.get("seller_email", "")).strip().lower()
     merged["seller_marital_status"] = str(client_data.get("seller_marital_status", "")).strip()
 
+    # Seller 2 (if exists)
+    merged["seller2_name"] = clean_name(client_data.get("seller2_name", ""))
+    merged["seller2_id"] = clean_id(client_data.get("seller2_id", ""))
+
     merged["buyer_name"] = clean_name(client_data.get("buyer_name", ""))
     merged["buyer_id"] = clean_id(client_data.get("buyer_id", ""))
     merged["buyer_address"] = str(client_data.get("buyer_address", "")).strip()
     merged["buyer_phone"] = clean_phone(client_data.get("buyer_phone", ""))
     merged["buyer_email"] = str(client_data.get("buyer_email", "")).strip().lower()
+
+    # Buyer 2 (if exists)
+    merged["buyer2_name"] = clean_name(client_data.get("buyer2_name", ""))
+    merged["buyer2_id"] = clean_id(client_data.get("buyer2_id", ""))
 
     merged["property_address"] = str(client_data.get("property_address", "")).strip()
     merged["property_type"] = str(client_data.get("property_type", "")).strip()
@@ -96,6 +104,11 @@ def merge_and_clean(client_data: dict, ocr_data: dict = None) -> dict:
     merged["price"] = clean_price(client_data.get("price", 0))
     merged["signing_date"] = str(client_data.get("signing_date", "")).strip()
     merged["delivery_date"] = str(client_data.get("delivery_date", "")).strip()
+
+    # Transaction details
+    merged["mortgage_bank"] = str(client_data.get("mortgage_bank", "")).strip()
+    merged["buyer_lawyer"] = str(client_data.get("buyer_lawyer", "")).strip()
+    merged["buyer_lawyer_email"] = str(client_data.get("buyer_lawyer_email", "")).strip().lower()
 
     # Computed fields
     if merged["area_sqm"] > 0:

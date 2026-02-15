@@ -19,9 +19,18 @@ TOKEN_FILE = Path(__file__).parent / "token.json"
 PARENT_FOLDER_ID = "1LskZ4d15jU4v28WfkIW6-1tqJpa0BDc4"  # חוזי נדלן folder
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
+# Cache the service to avoid recreating it for each file upload
+_cached_service = None
+
 
 def get_drive_service():
-    """Get authenticated Google Drive service using OAuth2."""
+    """Get authenticated Google Drive service using OAuth2 (cached for performance)."""
+    global _cached_service
+
+    # Return cached service if available
+    if _cached_service is not None:
+        return _cached_service
+
     creds = None
 
     # Try to load from Streamlit secrets (for cloud deployment)
@@ -61,6 +70,7 @@ def get_drive_service():
                 token.write(creds.to_json())
 
     service = build('drive', 'v3', credentials=creds)
+    _cached_service = service
     return service
 
 
