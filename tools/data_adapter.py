@@ -30,6 +30,12 @@ def normalize_transaction(data: dict) -> dict:
         flat["seller_email"] = primary.get("email", "")
         flat["seller_marital_status"] = primary.get("marital_status", "")
 
+    # Secondary seller (if exists)
+    if len(sellers) > 1:
+        secondary = sellers[1]
+        flat["seller2_name"] = secondary.get("name", "")
+        flat["seller2_id"] = secondary.get("id", "")
+
     # Primary buyer (first in list)
     buyers = data.get("buyers", [])
     if buyers:
@@ -40,6 +46,12 @@ def normalize_transaction(data: dict) -> dict:
         flat["buyer_phone"] = primary.get("phone", "")
         flat["buyer_email"] = primary.get("email", "")
         flat["buyer_marital_status"] = primary.get("marital_status", "")
+
+    # Secondary buyer (if exists)
+    if len(buyers) > 1:
+        secondary = buyers[1]
+        flat["buyer2_name"] = secondary.get("name", "")
+        flat["buyer2_id"] = secondary.get("id", "")
 
     # Property
     prop = data.get("property", {})
@@ -72,23 +84,45 @@ def normalize_transaction(data: dict) -> dict:
 
 def denormalize_transaction(flat: dict) -> dict:
     """Convert flat system format back to nested submission format."""
-    nested = {
-        "sellers": flat.get("all_sellers", [{
+    # Build sellers list
+    sellers = flat.get("all_sellers", [])
+    if not sellers:
+        sellers = [{
             "name": flat.get("seller_name", ""),
             "id": flat.get("seller_id", ""),
             "address": flat.get("seller_address", ""),
             "phone": flat.get("seller_phone", ""),
             "email": flat.get("seller_email", ""),
             "marital_status": flat.get("seller_marital_status", ""),
-        }]),
-        "buyers": flat.get("all_buyers", [{
+        }]
+        # Add seller2 if exists
+        if flat.get("seller2_name") or flat.get("seller2_id"):
+            sellers.append({
+                "name": flat.get("seller2_name", ""),
+                "id": flat.get("seller2_id", ""),
+            })
+
+    # Build buyers list
+    buyers = flat.get("all_buyers", [])
+    if not buyers:
+        buyers = [{
             "name": flat.get("buyer_name", ""),
             "id": flat.get("buyer_id", ""),
             "address": flat.get("buyer_address", ""),
             "phone": flat.get("buyer_phone", ""),
             "email": flat.get("buyer_email", ""),
             "marital_status": flat.get("buyer_marital_status", ""),
-        }]),
+        }]
+        # Add buyer2 if exists
+        if flat.get("buyer2_name") or flat.get("buyer2_id"):
+            buyers.append({
+                "name": flat.get("buyer2_name", ""),
+                "id": flat.get("buyer2_id", ""),
+            })
+
+    nested = {
+        "sellers": sellers,
+        "buyers": buyers,
         "property": {
             "address": flat.get("property_address", ""),
             "block_number": flat.get("block_number", ""),
