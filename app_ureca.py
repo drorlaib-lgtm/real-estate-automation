@@ -26,8 +26,8 @@ from tools.data_adapter import normalize_transaction
 from tools.submission_manager import save_submission, upload_submission_to_drive
 from email_service import send_notification_email
 
-# Template for ureca (agreement X.10)
-TEMPLATE_PATH = Path(__file__).parent / "templates" / "agreement_x10.docx"
+# Template for ureca - RECA agreement (the only correct template)
+TEMPLATE_PATH = Path(__file__).parent / "templates" / "reca_agreement.docx"
 
 # European date format
 EU_DATE_FMT = "%d/%m/%Y"
